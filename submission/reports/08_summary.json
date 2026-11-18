@@ -1,0 +1,18 @@
+{
+  "verdict": {
+    "decision": "Release",
+    "n_errors": 0,
+    "n_warn_images": 16,
+    "n_images": 205,
+    "warn_ratio": 0.078,
+    "reasons": [
+      "Không còn lỗi bắt buộc; 16/205 ảnh chưa duyệt có cảnh báo (tỉ lệ 0.0780), thấp hơn ngưỡng 0.1000."
+    ]
+  },
+  "reviewed": 80,
+  "budget": 80,
+  "seconds": 9.6,
+  "exported": "I:\\downloads\\vinuni AA\\K5-L23-DAY09-2A202603190-NguyenHaiDang-AutoQCPipeline\\submission\\export\\clean_v1",
+  "config_sha1": "e3a9f348b30b9bf9ea8f570a2635a07be2d2bb54",
+  "review_sim_sha1": "7988ca22827f780a7043a2300490e679a1697154"
+}
