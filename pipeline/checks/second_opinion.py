@@ -41,4 +41,114 @@ from ..model_cache import get_preds  # noqa: F401
 
 def run(ds, cfg, preds=None):
     # TODO
-    raise NotImplementedError("check second_opinion chưa làm")
+    if preds is None:
+        preds = get_preds(ds, cfg, "checker")
+
+    thresholds = cfg["second_opinion"]
+    issues = []
+
+    for image_path in ds.image_files():
+        stem = image_path.stem
+        if stem not in preds or not ds.label_path(stem).exists():
+            continue
+
+        numbered_labels = []
+        for line_no, text in ds.read_label_lines(stem) or []:
+            try:
+                label = parse_yolo_line(text)
+            except (ValueError, OverflowError):
+                continue
+            if 0 <= label[0] < len(ds.classes):
+                numbered_labels.append((line_no, label))
+
+        image_size = ds.image_size(stem)
+        prediction_pool = []
+        support_pool = []
+
+        for prediction in preds[stem]:
+            class_id, confidence, cx, cy, width, height = prediction
+            box = (cx, cy, width, height)
+
+            if confidence >= thresholds["fp_conf"]:
+                support_pool.append((class_id, confidence, box))
+
+            if image_size is None:
+                continue
+            image_width, image_height = image_size
+            area_px = width * image_width * height * image_height
+            if (
+                confidence >= thresholds["conf"]
+                and area_px >= thresholds["min_area_px"]
+            ):
+                prediction_pool.append((class_id, confidence, box))
+
+        for predicted_class, confidence, predicted_box in prediction_pool:
+            candidates = []
+            for _, label in numbered_labels:
+                label_class, *label_box = label
+                overlap = iou_xywh(predicted_box, label_box)
+                if overlap >= thresholds["iou_missing"]:
+                    candidates.append((label_class, overlap))
+
+            if not candidates:
+                issues.append(Issue(
+                    "second_opinion", WARN, "POSSIBLE_MISSING", stem,
+                    f"model thấy lớp {predicted_class} nhưng không có box nhãn "
+                    f"khớp (conf={confidence:.4f})",
+                    extra={"conf": confidence},
+                ))
+                continue
+
+            same_class_ious = [
+                overlap
+                for label_class, overlap in candidates
+                if label_class == predicted_class
+            ]
+            if same_class_ious:
+                best_same_class_iou = max(same_class_ious)
+                if best_same_class_iou < thresholds["iou_loose"]:
+                    issues.append(Issue(
+                        "second_opinion", WARN, "POSSIBLE_LOOSE_BOX", stem,
+                        f"box cùng lớp {predicted_class} khớp chưa chặt "
+                        f"(IoU={best_same_class_iou:.4f}, "
+                        f"conf={confidence:.4f})",
+                        extra={
+                            "conf": confidence,
+                            "iou": best_same_class_iou,
+                        },
+                    ))
+                continue
+
+            best_other_class_iou = max(
+                overlap for _, overlap in candidates
+            )
+            if best_other_class_iou >= thresholds["iou_match"]:
+                issues.append(Issue(
+                    "second_opinion", WARN, "POSSIBLE_WRONG_CLASS", stem,
+                    f"model dự đoán lớp {predicted_class} nhưng box khớp "
+                    f"một nhãn lớp khác (IoU={best_other_class_iou:.4f}, "
+                    f"conf={confidence:.4f})",
+                    extra={
+                        "conf": confidence,
+                        "iou": best_other_class_iou,
+                    },
+                ))
+
+        for line_no, label in numbered_labels:
+            _, *label_box = label
+            support_ious = [
+                iou_xywh(label_box, predicted_box)
+                for _, _, predicted_box in support_pool
+            ]
+            best_support_iou = max(support_ious, default=0.0)
+            if best_support_iou < thresholds["iou_missing"]:
+                issues.append(Issue(
+                    "second_opinion", WARN, "POSSIBLE_FALSE_POS", stem,
+                    f"box nhãn ở dòng {line_no} không khớp dự đoán nào "
+                    f"(IoU tốt nhất={best_support_iou:.4f})",
+                    line=line_no,
+                    extra={"iou": best_support_iou},
+                ))
+
+    return issues
+    # raise NotImplementedError("check second_opinion chưa làm")
