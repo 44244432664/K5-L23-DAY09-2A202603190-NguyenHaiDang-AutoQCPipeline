@@ -26,4 +26,85 @@ from ..common import ERROR, WARN, Issue, iou_xywh, parse_yolo_line  # noqa: F401
 
 def run(ds, cfg):
     # TODO: duyệt từng file nhãn, từng dòng
-    raise NotImplementedError("check label_format chưa làm")
+    issues = []
+    thresholds = cfg["label_format"]
+
+    for label_path in ds.label_files():
+        stem = label_path.stem
+        image_size = ds.image_size(stem)
+        earlier_boxes = []
+
+        for line_no, text in ds.read_label_lines(stem) or []:
+            try:
+                class_id, cx, cy, width, height = parse_yolo_line(text)
+            except (ValueError, OverflowError) as exc:
+                issues.append(Issue(
+                    "label_format", ERROR, "BAD_FORMAT", stem,
+                    f"dòng nhãn sai định dạng: {exc}", line=line_no,
+                ))
+                continue
+
+            if not 0 <= class_id < len(ds.classes):
+                issues.append(Issue(
+                    "label_format", ERROR, "BAD_CLASS_ID", stem,
+                    f"id lớp {class_id} ngoài khoảng 0..{len(ds.classes) - 1}",
+                    line=line_no,
+                ))
+                continue
+
+            if width <= 0 or height <= 0:
+                issues.append(Issue(
+                    "label_format", ERROR, "BOX_ZERO", stem,
+                    f"box có kích thước không dương: w={width:g}, h={height:g}",
+                    line=line_no,
+                ))
+                continue
+
+            box = (cx, cy, width, height)
+            left, top = cx - width / 2, cy - height / 2
+            right, bottom = cx + width / 2, cy + height / 2
+            overflow = max(0.0, -left, -top, right - 1.0, bottom - 1.0)
+
+            if overflow > thresholds["overflow_tol"]:
+                issues.append(Issue(
+                    "label_format", ERROR, "BOX_OUT_OF_IMAGE", stem,
+                    f"box tràn ảnh {overflow:.6g}", line=line_no,
+                    extra={"overflow": overflow},
+                ))
+
+            if any(
+                previous_class == class_id
+                and iou_xywh(previous_box, box) > thresholds["dup_box_iou"]
+                for previous_class, previous_box in earlier_boxes
+            ):
+                issues.append(Issue(
+                    "label_format", ERROR, "DUP_BOX", stem,
+                    "box gần như trùng một box cùng lớp ở dòng trước",
+                    line=line_no,
+                ))
+
+            if image_size is not None:
+                image_width, image_height = image_size
+                short_side_px = min(width * image_width, height * image_height)
+                if short_side_px < thresholds["min_box_px"]:
+                    issues.append(Issue(
+                        "label_format", WARN, "BOX_TINY", stem,
+                        f"cạnh ngắn của box {short_side_px:.2f}px "
+                        f"< {thresholds['min_box_px']}px",
+                        line=line_no,
+                        extra={"short_side_px": round(short_side_px, 4)},
+                    ))
+
+            if width * height > thresholds["max_box_frac"]:
+                issues.append(Issue(
+                    "label_format", WARN, "BOX_HUGE", stem,
+                    f"box chiếm {width * height:.4f} diện tích chuẩn hoá "
+                    f"> {thresholds['max_box_frac']}",
+                    line=line_no,
+                    extra={"box_frac": width * height},
+                ))
+
+            earlier_boxes.append((class_id, box))
+
+    return issues
+    # raise NotImplementedError("check label_format chưa làm")
